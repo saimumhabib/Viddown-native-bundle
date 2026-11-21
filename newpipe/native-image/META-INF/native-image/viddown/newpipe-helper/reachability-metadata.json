@@ -1,0 +1,86 @@
+{
+  "reflection": [
+    {
+      "type": "org.schabi.newpipe.extractor.Info",
+      "allPublicMethods": true
+    },
+    {
+      "type": "org.schabi.newpipe.extractor.ListInfo",
+      "allPublicMethods": true
+    },
+    {
+      "type": "org.schabi.newpipe.extractor.playlist.PlaylistInfo",
+      "allPublicMethods": true
+    },
+    {
+      "type": "org.schabi.newpipe.extractor.stream.StreamInfo",
+      "allPublicMethods": true
+    },
+    {
+      "type": "org.schabi.newpipe.extractor.stream.Stream",
+      "allPublicMethods": true
+    },
+    {
+      "type": "org.schabi.newpipe.extractor.stream.VideoStream",
+      "allPublicMethods": true
+    },
+    {
+      "type": "org.schabi.newpipe.extractor.stream.AudioStream",
+      "allPublicMethods": true
+    },
+    {
+      "type": "org.schabi.newpipe.extractor.stream.SubtitlesStream",
+      "allPublicMethods": true
+    },
+    {
+      "type": "org.schabi.newpipe.extractor.stream.Description",
+      "allPublicMethods": true
+    },
+    {
+      "type": "org.schabi.newpipe.extractor.MediaFormat",
+      "allPublicMethods": true
+    },
+    {
+      "type": "org.schabi.newpipe.extractor.services.youtube.protos.playlist.PlaylistProtobufContinuation$PlaylistContinuation",
+      "allDeclaredFields": true,
+      "allDeclaredMethods": true,
+      "allDeclaredConstructors": true
+    },
+    {
+      "type": "org.schabi.newpipe.extractor.services.youtube.protos.playlist.PlaylistProtobufContinuation$ContinuationParams",
+      "allDeclaredFields": true,
+      "allDeclaredMethods": true,
+      "allDeclaredConstructors": true
+    },
+    {
+      "type": "org.schabi.newpipe.extractor.services.youtube.protos.video.Xtags$XTags",
+      "allDeclaredFields": true,
+      "allDeclaredMethods": true,
+      "allDeclaredConstructors": true
+    },
+    {
+      "type": "org.schabi.newpipe.extractor.services.youtube.protos.video.Xtags$KeyValuePair",
+      "allDeclaredFields": true,
+      "allDeclaredMethods": true,
+      "allDeclaredConstructors": true
+    }
+  ],
+  "resources": [
+    {
+      "glob": "org/jsoup/nodes/*",
+      "reason": "jsoup entity tables (Entities loads them as resources)"
+    },
+    {
+      "glob": "org/jsoup/parser/*",
+      "reason": "jsoup tokeniser/entity data"
+    },
+    {
+      "glob": "org/mozilla/javascript/resources/*",
+      "reason": "Rhino message bundles"
+    },
+    {
+      "bundle": "org.mozilla.javascript.resources.Messages",
+      "reason": "Rhino error messages"
+    }
+  ]
+}

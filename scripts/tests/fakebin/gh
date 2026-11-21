@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Fake `gh` for the scenario tests. Logs every call to $FAKE_LOG.
+#   FAKE_ARTIFACTS   names returned by `gh api --paginate .../artifacts`
+#   FAKE_RELEASES    space separated tags that "already exist" for `gh release view`
+#   FAKE_NOTES_DIR   `gh release create TAG --notes-file F` copies F to $FAKE_NOTES_DIR/TAG.md
+#                    (an existing release's body is read from the same place)
+echo "gh $*" >> "$FAKE_LOG"
+case "$1 $2" in
+  "api --paginate") for n in $FAKE_ARTIFACTS; do echo "$n"; done ;;
+  "pr view") case "$*" in *mergeCommit*) echo "${FAKE_MERGE_SHA:-}" ;; *) echo "$FAKE_HEAD" ;; esac ;;
+  "pr merge") if [ "${FAKE_MERGE_RC:-0}" != 0 ]; then echo "merge refused: review required" >&2; exit 1; fi ;;
+  "release view")
+    tag="$3"
+    case " ${FAKE_RELEASES:-} " in
+      *" $tag "*) [ -f "${FAKE_NOTES_DIR:-/nonexistent}/$tag.md" ] && cat "$FAKE_NOTES_DIR/$tag.md" ;;
+      *) echo "release not found" >&2; exit 1 ;;
+    esac ;;
+  "release create")
+    tag="$3"
+    while [ $# -gt 0 ]; do
+      if [ "$1" = "--notes-file" ] && [ -n "${FAKE_NOTES_DIR:-}" ]; then mkdir -p "$FAKE_NOTES_DIR"; cp "$2" "$FAKE_NOTES_DIR/$tag.md"; fi
+      shift
+    done ;;
+  "release upload") ;;
+  "pr comment") while [ $# -gt 0 ]; do
+      [ "$1" = "--body-file" ] && cp "$2" "$FAKE_COMMENT"
+      [ "$1" = "--body" ] && printf '%s\n' "$2" > "$FAKE_COMMENT"
+      shift
+    done ;;
+esac
+exit 0

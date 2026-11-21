@@ -1,0 +1,401 @@
+name: build-native
+# Every tool of the bundle is built and released ON ITS OWN, under a tag that is the tool's own version
+# from native/sources.lock.toml (nobody types a tag):
+#     yt-dlp-v<version>   cpython-v<version>   ffmpeg-v<version>   newpipe-v<version>
+# A tool is built and released only when no release exists yet for that version made from the same inputs
+# (scripts/ci/tools.py). If the same version needs a second release (e.g. OpenSSL changed, CPython did not),
+# the tag gets .2, .3 ... Pull requests build everything but never release.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit or branch to build (empty = the branch you run this from)"
+        default: ""
+      release:
+        description: "Release every tool whose version has no release yet (tag = <tool>-v<version>). Off = build only."
+        type: boolean
+        default: true
+  # Called by update-sources.yml to build a proposed update before it may be merged. Only the tools
+  # with a NEW version are built there (only_new); the release itself is done by update-sources after the merge.
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        default: ""
+      release:
+        type: boolean
+        default: false
+      only_new:
+        type: boolean
+        default: false
+    outputs:
+      plan:
+        description: "JSON plan: per tool its tag, version and whether it needed a build/release"
+        value: ${{ jobs.plan.outputs.plan }}
+      any_needed:
+        description: "true when at least one tool needed a build"
+        value: ${{ jobs.plan.outputs.any_needed }}
+  pull_request:
+    paths:
+      - "scripts/**"
+      - "native/**"
+      - "patches/**"
+      - "newpipe/**"
+      - ".github/workflows/build-native.yml"
+permissions:
+  contents: read
+concurrency:
+  group: build-native-${{ inputs.ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  plan:
+    name: which tools need a build and a release
+    # auto/update-sources is built by update-sources.yml (workflow_call); do not build it twice
+    if: github.event_name != 'pull_request' || github.head_ref != 'auto/update-sources'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      plan: ${{ steps.plan.outputs.plan }}
+      any_needed: ${{ steps.plan.outputs.any_needed }}
+      ytdlp_needed: ${{ steps.plan.outputs.ytdlp_needed }}
+      ytdlp_tag: ${{ steps.plan.outputs.ytdlp_tag }}
+      ytdlp_ver: ${{ steps.plan.outputs.ytdlp_ver }}
+      cpython_needed: ${{ steps.plan.outputs.cpython_needed }}
+      cpython_tag: ${{ steps.plan.outputs.cpython_tag }}
+      cpython_ver: ${{ steps.plan.outputs.cpython_ver }}
+      ffmpeg_needed: ${{ steps.plan.outputs.ffmpeg_needed }}
+      ffmpeg_tag: ${{ steps.plan.outputs.ffmpeg_tag }}
+      ffmpeg_ver: ${{ steps.plan.outputs.ffmpeg_ver }}
+      newpipe_needed: ${{ steps.plan.outputs.newpipe_needed }}
+      newpipe_tag: ${{ steps.plan.outputs.newpipe_tag }}
+      newpipe_ver: ${{ steps.plan.outputs.newpipe_ver }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - id: plan
+        name: Tags from the lock file; which of them already have a release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ONLY_NEW: ${{ (inputs.release || inputs.only_new) && 'true' || 'false' }}
+        run: python3 scripts/ci/tools.py plan --repo "$GITHUB_REPOSITORY" --only-new "$ONLY_NEW" --summary-md "$GITHUB_STEP_SUMMARY"
+
+  ytdlp:
+    name: yt-dlp ${{ needs.plan.outputs.ytdlp_ver }} + pure-Python dependencies
+    needs: plan
+    if: needs.plan.outputs.ytdlp_needed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/sources
+          key: sources-${{ hashFiles('native/sources.lock.toml') }}
+          restore-keys: sources-
+      - run: scripts/build/build_python_packages.sh
+      - name: Package (viddown-native-yt-dlp-<version>.zip)
+        run: python3 scripts/package.py yt-dlp --version-tag "${{ needs.plan.outputs.ytdlp_ver }}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: viddown-native-yt-dlp
+          path: dist/release/*
+          if-no-files-found: error
+
+  cpython:
+    name: cpython ${{ needs.plan.outputs.cpython_ver }} + OpenSSL + libffi (${{ matrix.abi }})
+    needs: plan
+    if: needs.plan.outputs.cpython_needed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { abi: arm64-v8a,   experimental: false }
+          - { abi: x86_64,      experimental: false }
+          # CPython's android.py lists these hosts, but its own CI does not cover them.
+          # They are built and reported, but never claimed as supported until they pass.
+          - { abi: armeabi-v7a, experimental: true }
+          - { abi: x86,         experimental: true }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Build prerequisites (host Python for the cross-build + autotools for libffi)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential zip unzip patch autoconf automake libtool pkg-config \
+            libssl-dev zlib1g-dev libffi-dev libbz2-dev liblzma-dev libsqlite3-dev libreadline-dev uuid-dev
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/sources
+          key: sources-${{ hashFiles('native/sources.lock.toml') }}
+          restore-keys: sources-
+      - name: CPython + OpenSSL + libffi from source
+        run: scripts/build/build_python.sh ${{ matrix.abi }}
+      - name: Package (viddown-native-cpython-<abi>-<version>.zip)
+        run: python3 scripts/package.py cpython ${{ matrix.abi }} --version-tag "${{ needs.plan.outputs.cpython_ver }}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: viddown-native-cpython-${{ matrix.abi }}
+          path: dist/release/*
+          if-no-files-found: error
+      - name: Keep build logs when something failed
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-logs-cpython-${{ matrix.abi }}
+          path: |
+            build/work/*/cpython/cross-build/*/config.log
+            build/work/*/openssl/*.log
+          if-no-files-found: ignore
+
+  ffmpeg:
+    name: ffmpeg ${{ needs.plan.outputs.ffmpeg_ver }} (${{ matrix.abi }})
+    needs: plan
+    if: needs.plan.outputs.ffmpeg_needed == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { abi: arm64-v8a,   experimental: false }
+          - { abi: x86_64,      experimental: false }
+          - { abi: armeabi-v7a, experimental: true }
+          - { abi: x86,         experimental: true }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential zip unzip patch autoconf automake libtool pkg-config
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/sources
+          key: sources-${{ hashFiles('native/sources.lock.toml') }}
+          restore-keys: sources-
+      - name: FFmpeg + FFprobe from source (LGPL, minimal)
+        run: scripts/build/build_ffmpeg.sh ${{ matrix.abi }}
+      - name: Package (viddown-native-ffmpeg-<abi>-<version>.zip)
+        run: python3 scripts/package.py ffmpeg ${{ matrix.abi }} --version-tag "${{ needs.plan.outputs.ffmpeg_ver }}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: viddown-native-ffmpeg-${{ matrix.abi }}
+          path: dist/release/*
+          if-no-files-found: error
+      - name: Keep build logs when something failed
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-logs-ffmpeg-${{ matrix.abi }}
+          path: build/work/*/ffmpeg-build/ffbuild/config.log
+          if-no-files-found: ignore
+
+  smoke:
+    name: emulator smoke test (cpython + ffmpeg + yt-dlp together, x86_64)
+    needs: [plan, ytdlp, cpython, ffmpeg]
+    # Runs when at least one Android tool was built. The tools that were NOT rebuilt are taken from their
+    # existing release (their version has not changed), so the combination that is tested is the combination
+    # an app would download. A failed required build skips this job, and with it the release.
+    if: >-
+      ${{ always() && needs.plan.result == 'success'
+      && (needs.plan.outputs.ytdlp_needed == 'true' || needs.plan.outputs.cpython_needed == 'true' || needs.plan.outputs.ffmpeg_needed == 'true')
+      && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: yt-dlp, just built
+        if: needs.plan.outputs.ytdlp_needed == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: viddown-native-yt-dlp
+          path: smoke-in
+      - name: yt-dlp, unchanged (from its existing release)
+        if: needs.plan.outputs.ytdlp_needed != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${{ needs.plan.outputs.ytdlp_tag }}" --repo "$GITHUB_REPOSITORY" --pattern "viddown-native-yt-dlp-*.zip" --dir smoke-in
+      - name: cpython, just built
+        if: needs.plan.outputs.cpython_needed == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: viddown-native-cpython-x86_64
+          path: smoke-in
+      - name: cpython, unchanged (from its existing release)
+        if: needs.plan.outputs.cpython_needed != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${{ needs.plan.outputs.cpython_tag }}" --repo "$GITHUB_REPOSITORY" --pattern "viddown-native-cpython-x86_64-*.zip" --dir smoke-in
+      - name: ffmpeg, just built
+        if: needs.plan.outputs.ffmpeg_needed == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: viddown-native-ffmpeg-x86_64
+          path: smoke-in
+      - name: ffmpeg, unchanged (from its existing release)
+        if: needs.plan.outputs.ffmpeg_needed != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "${{ needs.plan.outputs.ffmpeg_tag }}" --repo "$GITHUB_REPOSITORY" --pattern "viddown-native-ffmpeg-x86_64-*.zip" --dir smoke-in
+      - name: Emulator smoke test needs a host ffmpeg only to GENERATE test media
+        run: |
+          ls -l smoke-in
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Smoke test on emulator, API 24 (the minimum we build for)
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 24
+          arch: x86_64
+          script: bash scripts/smoke/android_smoke.sh x86_64 smoke-in
+      - name: Smoke test on emulator, API 34
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 34
+          arch: x86_64
+          script: bash scripts/smoke/android_smoke.sh x86_64 smoke-in
+      # Uploaded only after BOTH smoke tests passed; update-sources' gate and the release job look for it.
+      - name: Marker - the smoke tests passed
+        run: echo "x86_64 emulator smoke test passed (API 24 and 34)" > smoke-passed-x86_64.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: smoke-passed-x86_64
+          path: smoke-passed-x86_64.txt
+          if-no-files-found: error
+
+  newpipe:
+    name: newpipe helper ${{ needs.plan.outputs.newpipe_ver }}, native (${{ matrix.platform }})
+    needs: plan
+    if: needs.plan.outputs.newpipe_needed == 'true'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    # Same stance as armeabi-v7a: built and reported, but a failure here does not block an update of
+    # the Android tools. A zip exists ONLY if the native executable passed its self-test, and the
+    # release notes say what was and was not run. To make it gating, set experimental to false and
+    # add the platforms to the required artifacts in scripts/ci/tools.py (required_artifacts).
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux is built on 22.04 on purpose: a native executable needs at least the glibc it was
+          # linked against, so the older one runs on more distributions.
+          - { platform: linux-x86_64,   runner: ubuntu-22.04, experimental: true }
+          - { platform: windows-x86_64, runner: windows-2022, experimental: true }
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Windows stops at 260-character paths unless git is told otherwise; NewPipe Extractor's test
+      # mocks are deeper than that. Harmless on Linux. Must come before checkout.
+      - name: Enable Git long paths
+        run: git config --global core.longpaths true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/sources
+          key: sources-${{ hashFiles('native/sources.lock.toml') }}
+          restore-keys: sources-
+      # NewPipe Extractor's own Gradle build asks for a Java 17 toolchain; GraalVM comes after it.
+      - name: JDK 17 (for the extractor's Gradle build)
+        id: jdk17
+        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Fetch pinned sources, build the extractor, compile the helper
+        run: python scripts/build/build_newpipe.py extractor --platform "${{ matrix.platform }}" --jdk17 "${{ steps.jdk17.outputs.path }}"
+      - name: GraalVM (native-image; sets up the MSVC environment on Windows)
+        uses: graalvm/setup-graalvm@60e76998d25690099182b796e99b8804da582d90 # v1.6.10
+        with:
+          java-version: "25"
+          distribution: graalvm-community
+          github-token: ${{ github.token }}
+      - name: Native executable, self-tested on the JVM and as a native binary
+        run: python scripts/build/build_newpipe.py native --platform "${{ matrix.platform }}"
+      - name: Package
+        run: python scripts/package_newpipe.py "${{ matrix.platform }}" --version-tag "${{ needs.plan.outputs.newpipe_ver }}"
+      - name: Smoke test the packaged helper
+        run: python scripts/smoke/newpipe_smoke.py dist/release/viddown-native-newpipe-${{ matrix.platform }}-*.zip
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: viddown-native-newpipe-${{ matrix.platform }}
+          path: dist/release/*
+          if-no-files-found: error
+      - name: Keep build files when something failed
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-logs-newpipe-${{ matrix.platform }}
+          path: |
+            build/newpipe/${{ matrix.platform }}/state.json
+            build/newpipe/${{ matrix.platform }}/agent-config/
+            build/newpipe/${{ matrix.platform }}/extractor-src/extractor/build/reports/
+          if-no-files-found: ignore
+
+  release:
+    name: GitHub releases (one per tool, tag = <tool>-v<version>)
+    # Only when asked for (manual run with "release" on). update-sources releases by itself after its merge.
+    if: >-
+      ${{ always() && inputs.release && needs.plan.result == 'success' && needs.plan.outputs.any_needed == 'true'
+      && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
+    needs: [plan, ytdlp, cpython, ffmpeg, smoke, newpipe]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: viddown-native-*
+          path: release-assets
+          merge-multiple: true
+      - name: Create one release per tool that needs one, then refresh the index
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLAN_JSON: ${{ needs.plan.outputs.plan }}
+        run: |
+          set -o pipefail   # a refused or failed release must fail this step, not hide behind tee
+          python3 scripts/ci/publish_releases.py --plan "$PLAN_JSON" --assets release-assets \
+            --lock native/sources.lock.toml --repo "$GITHUB_REPOSITORY" --target "$(git rev-parse HEAD)" \
+            --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" | tee -a "$GITHUB_STEP_SUMMARY"

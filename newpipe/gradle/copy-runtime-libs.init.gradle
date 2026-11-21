@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Passed to the pinned NewPipe Extractor's own Gradle build with --init-script, so the upstream
+// build files stay untouched. Adds one task to the :extractor project that copies every jar the
+// extractor needs at run time (jsoup, rhino, protobuf-javalite, nanojson, jsr305, ...) into
+// extractor/build/runtime-libs. build_newpipe.py puts those jars on the helper's classpath and
+// records their SHA-256 in BUILD_INFO.json.
+gradle.allprojects { p ->
+    p.afterEvaluate {
+        if (p.path == ':extractor') {
+            p.tasks.register('copyRuntimeLibs', Copy) {
+                from p.configurations.runtimeClasspath
+                into p.layout.buildDirectory.dir('runtime-libs')
+            }
+        }
+    }
+}
